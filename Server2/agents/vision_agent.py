@@ -6,13 +6,40 @@ from io import BytesIO
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Union
 import logging
 from functools import lru_cache
+import time
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+@dataclass
+class ProcessingStats:
+    total_frames_processed: int = 0
+    total_humans_detected: int = 0
+    last_processed_timestamp: float = 0
+    processing_times: List[float] = None
+
+    def __post_init__(self):
+        if self.processing_times is None:
+            self.processing_times = []
+
+    def update(self, humans_detected: int, processing_time: float):
+        self.total_frames_processed += 1
+        self.total_humans_detected += humans_detected
+        self.last_processed_timestamp = time.time()
+        self.processing_times.append(processing_time)
+        
+        # Keep only last 100 processing times
+        if len(self.processing_times) > 100:
+            self.processing_times.pop(0)
+
+    def get_average_processing_time(self) -> float:
+        if not self.processing_times:
+            return 0
+        return sum(self.processing_times) / len(self.processing_times)
 
 @dataclass
 class ImageSegment:
@@ -26,15 +53,28 @@ class AnalysisResult:
     analysis: str
     human_count: int
     details: str
+    confidence: float = 1.0
 
 class VisionAgent:
-    def __init__(self, window_size=512, stride=384, max_workers=4, cache_size=128):
+    def __init__(self, 
+                 window_size=512, 
+                 stride=384, 
+                 max_workers=4, 
+                 cache_size=128,
+                 confidence_threshold=0.7,
+                 min_segment_size=256,
+                 enable_gpu=False):
         load_dotenv()
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         self.window_size = window_size
         self.stride = stride
         self.max_workers = max_workers
+        self.confidence_threshold = confidence_threshold
+        self.min_segment_size = min_segment_size
+        self.enable_gpu = enable_gpu
         self.MAX_BASE64_SIZE = 4 * 1024 * 1024
+        self.stats = ProcessingStats()
+        
         self.prompt = """As a search-and-rescue specialist, analyze this image segment.
         First state the number of people visible, then describe their conditions and positions.
         Include any immediate risks or hazards.
@@ -75,18 +115,57 @@ class VisionAgent:
             
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-    def _parse_analysis(self, analysis: str) -> Tuple[int, str]:
-        """Parse the analysis response to extract count and details."""
+    def _parse_analysis(self, analysis: str) -> Tuple[int, str, float]:
+        """Parse the analysis response to extract count, details, and estimate confidence."""
         try:
             parts = analysis.split(':', 1)
             if len(parts) == 2:
                 count = int(parts[0].strip())
                 details = parts[1].strip()
-                return count, details
-            return 0, analysis
+                
+                # Estimate confidence based on language used
+                confidence = 1.0
+                if any(word in details.lower() for word in ['maybe', 'possibly', 'unclear', 'might']):
+                    confidence *= 0.7
+                if any(word in details.lower() for word in ['difficult to see', 'partially visible']):
+                    confidence *= 0.8
+                    
+                return count, details, confidence
+            return 0, analysis, 0.5
         except (ValueError, IndexError):
-            return 0, analysis
+            return 0, analysis, 0.5
 
+    async def process_chunk(self, video_bytes: bytes) -> Dict:
+        """Process incoming video chunk."""
+        start_time = time.time()
+        try:
+            print("\n=== Vision Agent Processing Start ===")
+            print(f"Received video chunk of size: {len(video_bytes)} bytes")
+            
+            # Convert video frame bytes to PIL Image
+            image = Image.open(BytesIO(video_bytes))
+            print(f"Converted to image: {image.size} {image.mode}")
+            
+            # Process the image
+            print("Starting image analysis...")
+            result = await self.process_image(image)
+            print(f"Analysis complete. Found {result.get('total_human_count', 0)} humans")
+            
+            # Update stats
+            processing_time = time.time() - start_time
+            self.stats.update(result.get('total_human_count', 0), processing_time)
+            print(f"Processing time: {processing_time:.2f} seconds")
+            print("=== Vision Agent Processing Complete ===\n")
+            
+            return result
+        except Exception as e:
+            print(f"ERROR in Vision Agent: {str(e)}")
+            return {
+                "error": str(e),
+                "total_human_count": 0,
+                "key_details": [],
+                "segments": []
+        }
     def _analyze_segment(self, segment: ImageSegment) -> AnalysisResult:
         """Analyze a single image segment."""
         try:
@@ -114,13 +193,14 @@ class VisionAgent:
             )
             
             analysis = response.choices[0].message.content
-            human_count, details = self._parse_analysis(analysis)
+            human_count, details, confidence = self._parse_analysis(analysis)
             
             return AnalysisResult(
                 coordinates=segment.coordinates,
                 analysis=analysis,
                 human_count=human_count,
-                details=details
+                details=details,
+                confidence=confidence
             )
         except Exception as e:
             logger.error(f"Error analyzing segment {segment.segment_number}: {str(e)}")
@@ -128,7 +208,8 @@ class VisionAgent:
                 coordinates=segment.coordinates,
                 analysis=f"Error: {str(e)}",
                 human_count=0,
-                details=""
+                details="",
+                confidence=0.0
             )
 
     def _generate_segments(self, img: Image.Image) -> List[ImageSegment]:
@@ -139,6 +220,11 @@ class VisionAgent:
 
         for y in range(0, height - self.stride//2, self.stride):
             for x in range(0, width - self.stride//2, self.stride):
+                # Skip segments smaller than minimum size
+                if (min(x + self.window_size, width) - x < self.min_segment_size or
+                    min(y + self.window_size, height) - y < self.min_segment_size):
+                    continue
+                    
                 segment_count += 1
                 box = (
                     x,
@@ -151,19 +237,26 @@ class VisionAgent:
 
         return segments
 
-    def process_image(self, image_path: str) -> Dict:
+    async def process_image(self, image_input: Union[str, Image.Image, bytes]) -> Dict:
         """Process image with parallel segment analysis."""
         try:
-            # Validate and load image
-            if not os.path.exists(image_path):
-                raise FileNotFoundError(f"Image file not found: {image_path}")
-                
-            img = Image.open(image_path)
+            # Handle different input types
+            if isinstance(image_input, str):
+                if not os.path.exists(image_input):
+                    raise FileNotFoundError(f"Image file not found: {image_input}")
+                img = Image.open(image_input)
+            elif isinstance(image_input, bytes):
+                img = Image.open(BytesIO(image_input))
+            elif isinstance(image_input, Image.Image):
+                img = image_input
+            else:
+                raise ValueError("Unsupported image input type")
             
             # Check file size
-            file_size = os.path.getsize(image_path)
-            if file_size > 20 * 1024 * 1024:
-                raise ValueError(f"Image too large ({file_size} bytes). Must be under 20MB.")
+            if isinstance(image_input, str):
+                file_size = os.path.getsize(image_input)
+                if file_size > 20 * 1024 * 1024:
+                    raise ValueError(f"Image too large ({file_size} bytes). Must be under 20MB.")
 
             # Generate segments
             segments = self._generate_segments(img)
@@ -199,47 +292,56 @@ class VisionAgent:
             "total_human_count": 0,
             "key_details": [],
             "segments": [],
-            "confidence_level": "high"
+            "confidence_level": "high",
+            "stats": {
+                "total_frames": self.stats.total_frames_processed,
+                "avg_processing_time": self.stats.get_average_processing_time(),
+                "total_humans_detected": self.stats.total_humans_detected
+            }
         }
 
         # Track unique detections to avoid duplicates
         unique_detections = set()
         detection_counts = {}
+        weighted_confidences = []
 
         for result in results:
-            if result.human_count > 0:
+            if result.human_count > 0 and result.confidence >= self.confidence_threshold:
                 # Create a normalized version of the details for deduplication
                 normalized_details = ' '.join(result.details.lower().split())
                 
                 if normalized_details not in unique_detections:
                     unique_detections.add(normalized_details)
-                    final_report['key_details'].append(f"{result.human_count}: {result.details}")
+                    final_report['key_details'].append(
+                        f"{result.human_count}: {result.details} (Confidence: {result.confidence:.2f})"
+                    )
                     
-                    # Track detection frequencies
+                    # Track detection frequencies with confidence weighting
                     for i in range(result.human_count):
                         coord_key = (
                             result.coordinates[0] // self.stride,
                             result.coordinates[1] // self.stride
                         )
                         detection_counts[coord_key] = detection_counts.get(coord_key, 0) + 1
+                        weighted_confidences.append(result.confidence)
 
             final_report['segments'].append({
                 "coordinates": result.coordinates,
-                "analysis": result.analysis
+                "analysis": result.analysis,
+                "confidence": result.confidence
             })
 
-        # Estimate total count considering overlaps
-        if detection_counts:
-            # Use the mode of detection counts as the likely true count
-            most_common_count = max(detection_counts.values())
-            final_report['total_human_count'] = most_common_count
-            
-            # Adjust confidence level based on detection consistency
-            variance = len(set(detection_counts.values()))
-            if variance > 2:
-                final_report['confidence_level'] = "medium"
-            elif variance > 4:
+        # Calculate final confidence and human count
+        if weighted_confidences:
+            avg_confidence = sum(weighted_confidences) / len(weighted_confidences)
+            if avg_confidence < 0.7:
                 final_report['confidence_level'] = "low"
+            elif avg_confidence < 0.9:
+                final_report['confidence_level'] = "medium"
+
+            # Use weighted counts for total
+            most_common_count = max(detection_counts.values())
+            final_report['total_human_count'] = int(most_common_count * avg_confidence)
 
         final_report['description'] = self._generate_summary(final_report)
         return final_report
@@ -249,7 +351,8 @@ class VisionAgent:
         summary = "Search and Rescue Analysis Summary\n"
         summary += "================================\n"
         summary += f"Estimated human presence: {report['total_human_count']} people\n"
-        summary += f"Confidence level: {report['confidence_level']}\n\n"
+        summary += f"Confidence level: {report['confidence_level']}\n"
+        summary += f"Processing time: {report['stats']['avg_processing_time']:.2f}s\n\n"
         
         if report['key_details']:
             summary += "Key observations:\n"
@@ -263,17 +366,11 @@ class VisionAgent:
             
         return summary
 
-
-if __name__ == "__main__":
-    # Example usage
-    agent = VisionAgent(max_workers=4)  # Adjust workers based on CPU cores
-    result = agent.process_image("test.jpg")
-    print(result['description'])
-    
-    # Print detailed segment analysis if verbose output is needed
-    if result['segments']:
-        print("\nDetailed segment analysis:")
-        for seg in result['segments'][:3]:
-            if not seg['analysis'].startswith("Error"):
-                print(f"\nArea {seg['coordinates']}:")
-                print(seg['analysis'])
+    def get_stats(self) -> Dict:
+        """Return current processing statistics."""
+        return {
+            "total_frames_processed": self.stats.total_frames_processed,
+            "total_humans_detected": self.stats.total_humans_detected,
+            "average_processing_time": self.stats.get_average_processing_time(),
+            "last_processed": self.stats.last_processed_timestamp
+        }

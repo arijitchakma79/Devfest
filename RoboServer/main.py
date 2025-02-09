@@ -27,7 +27,11 @@ data_lock = threading.Lock()
 
 # Destination URL for the receiving FastAPI server.
 # Update <destination-ip> and port as needed.
+<<<<<<< HEAD
+DESTINATION_URL = "http://localhost:8000/receive_chunk/"
+=======
 DESTINATION_URL = "http://0.0.0.0:8000/receive_chunk/"
+>>>>>>> 88c29a20bb1f4f1a3fc7cb5055903e32f67de20a
 
 def process_chunk(chunk_id, images):
     """
@@ -132,11 +136,19 @@ def upload_file():
         image_data = request.data
 
         # Save a raw JPEG copy for reference.
+<<<<<<< HEAD
+        """now_str = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        raw_filename = f"chunk{chunk_id}_{chunk_start}_img_{now_str}.jpg"
+        raw_filepath = os.path.join(UPLOAD_FOLDER, raw_filename)
+        with open(raw_filepath, 'wb') as f:
+            f.write(image_data)"""
+=======
         now_str = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         raw_filename = f"chunk{chunk_id}_{chunk_start}_img_{now_str}.jpg"
         raw_filepath = os.path.join(UPLOAD_FOLDER, raw_filename)
         with open(raw_filepath, 'wb') as f:
             f.write(image_data)
+>>>>>>> 88c29a20bb1f4f1a3fc7cb5055903e32f67de20a
 
         # Queue the image under its chunk.
         with data_lock:

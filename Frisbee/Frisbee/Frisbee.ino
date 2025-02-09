@@ -22,10 +22,21 @@
 #define PCLK_GPIO_NUM     22
 
 // ===== WiFi & Server Settings =====
+<<<<<<< HEAD
+//const char* ssid = "testSKY";
+//const char* password = "1234abcd@";
+//const char* serverUrl = "http://10.206.92.118:5000/upload";
+
+=======
+>>>>>>> 88c29a20bb1f4f1a3fc7cb5055903e32f67de20a
 const char* ssid = "Eray";
 const char* password = "12345678";
 const char* serverUrl = "http://10.206.41.172:5000/upload";
 
+<<<<<<< HEAD
+
+=======
+>>>>>>> 88c29a20bb1f4f1a3fc7cb5055903e32f67de20a
 // ===== Chunk Settings =====
 const unsigned long CHUNK_DURATION_MS = 1000; // 1-second chunks
 

@@ -54,33 +54,35 @@ class AnalysisResult:
     human_count: int
     details: str
     confidence: float = 1.0
+    safety_status: str = "SAFE"  # Added for frontend
+    image_data: Optional[str] = None  # Added for frontend
 
 class VisionAgent:
-    def __init__(self, 
-                 window_size=512, 
-                 stride=384, 
-                 max_workers=4, 
-                 cache_size=128,
-                 confidence_threshold=0.7,
-                 min_segment_size=256,
-                 enable_gpu=False):
+    def __init__(self, window_size=512, stride=384, max_workers=4, cache_size=128):
         load_dotenv()
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         self.window_size = window_size
         self.stride = stride
         self.max_workers = max_workers
-        self.confidence_threshold = confidence_threshold
-        self.min_segment_size = min_segment_size
-        self.enable_gpu = enable_gpu
         self.MAX_BASE64_SIZE = 4 * 1024 * 1024
-        self.stats = ProcessingStats()
-        
+        self.stats = ProcessingStats()  # Add this line
+        self.confidence_threshold = 0.5  # Add this line
+        self.min_segment_size = 256     # Add this line
         self.prompt = """As a search-and-rescue specialist, analyze this image segment.
         First state the number of people visible, then describe their conditions and positions.
         Include any immediate risks or hazards.
         Format: [Number]: [Brief description of people and risks]
         Example: "2: Two rescuers on damaged roof, one with safety equipment. Risk of structural collapse."
+        Also assess if the detected humans are in a SAFE or UNSAFE situation.
         """
+
+    def _get_confidence_level(self, confidence: float) -> str:
+        """Convert confidence score to level."""
+        if confidence >= 0.8:
+            return "high"
+        elif confidence >= 0.5:
+            return "medium"
+        return "low"
 
     @lru_cache(maxsize=128)
     def _get_optimal_quality(self, image_size: int) -> int:
@@ -95,25 +97,21 @@ class VisionAgent:
             return 65
 
     def _image_to_base64(self, image: Image.Image) -> str:
-        """Convert image to base64 with adaptive compression."""
+        """Convert image to base64 with size limitations."""
         if image.mode == 'RGBA':
             image = image.convert('RGB')
 
-        # Get initial image size
-        test_buffer = BytesIO()
-        image.save(test_buffer, format='JPEG', quality=95)
-        initial_size = len(test_buffer.getvalue())
+        # Resize if image is too large
+        max_size = (800, 800)  # Maximum dimensions
+        if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
+            image.thumbnail(max_size, Image.LANCZOS)
 
-        # Use cached quality setting
-        quality = self._get_optimal_quality(initial_size)
-        
+        # Compress image
         buffered = BytesIO()
-        image.save(buffered, format='JPEG', quality=quality)
+        image.save(buffered, format='JPEG', quality=85)
         
-        if len(buffered.getvalue()) > self.MAX_BASE64_SIZE:
-            raise ValueError(f"Image too large even after compression")
-            
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
 
     def _parse_analysis(self, analysis: str) -> Tuple[int, str, float]:
         """Parse the analysis response to extract count, details, and estimate confidence."""
@@ -140,32 +138,37 @@ class VisionAgent:
         start_time = time.time()
         try:
             print("\n=== Vision Agent Processing Start ===")
-            print(f"Received video chunk of size: {len(video_bytes)} bytes")
             
-            # Convert video frame bytes to PIL Image
+            # Convert video frame bytes to PIL Image and resize
             image = Image.open(BytesIO(video_bytes))
-            print(f"Converted to image: {image.size} {image.mode}")
+            if image.size[0] > 800 or image.size[1] > 800:
+                image.thumbnail((800, 800), Image.LANCZOS)
+            
+            # Convert back to base64 for storage
+            compressed_image = self._image_to_base64(image)
             
             # Process the image
-            print("Starting image analysis...")
             result = await self.process_image(image)
-            print(f"Analysis complete. Found {result.get('total_human_count', 0)} humans")
+            
+            # Add the compressed image to result
+            result['image_data'] = compressed_image
             
             # Update stats
             processing_time = time.time() - start_time
             self.stats.update(result.get('total_human_count', 0), processing_time)
-            print(f"Processing time: {processing_time:.2f} seconds")
-            print("=== Vision Agent Processing Complete ===\n")
             
             return result
+            
         except Exception as e:
             print(f"ERROR in Vision Agent: {str(e)}")
             return {
                 "error": str(e),
                 "total_human_count": 0,
                 "key_details": [],
-                "segments": []
-        }
+                "segments": [],
+                "image_data": None
+            }
+
     def _analyze_segment(self, segment: ImageSegment) -> AnalysisResult:
         """Analyze a single image segment."""
         try:
@@ -195,12 +198,18 @@ class VisionAgent:
             analysis = response.choices[0].message.content
             human_count, details, confidence = self._parse_analysis(analysis)
             
+            # Determine safety status based on analysis
+            safety_status = "UNSAFE" if any(keyword in analysis.lower() 
+                for keyword in ["risk", "hazard", "danger", "unsafe", "injured", "trapped"]) else "SAFE"
+            
             return AnalysisResult(
                 coordinates=segment.coordinates,
                 analysis=analysis,
                 human_count=human_count,
                 details=details,
-                confidence=confidence
+                confidence=confidence,
+                safety_status=safety_status,
+                image_data=base64_image
             )
         except Exception as e:
             logger.error(f"Error analyzing segment {segment.segment_number}: {str(e)}")
@@ -209,8 +218,11 @@ class VisionAgent:
                 analysis=f"Error: {str(e)}",
                 human_count=0,
                 details="",
-                confidence=0.0
+                confidence=0.0,
+                safety_status="UNKNOWN",
+                image_data=None
             )
+
 
     def _generate_segments(self, img: Image.Image) -> List[ImageSegment]:
         """Generate overlapping image segments."""
@@ -293,57 +305,33 @@ class VisionAgent:
             "key_details": [],
             "segments": [],
             "confidence_level": "high",
+            "safety_statuses": [],
+            "image_data": None,  # Will be added by process_chunk
             "stats": {
-                "total_frames": self.stats.total_frames_processed,
+                "total_frames_processed": self.stats.total_frames_processed,
                 "avg_processing_time": self.stats.get_average_processing_time(),
                 "total_humans_detected": self.stats.total_humans_detected
             }
         }
 
-        # Track unique detections to avoid duplicates
-        unique_detections = set()
-        detection_counts = {}
-        weighted_confidences = []
+        # Get the maximum confidence result for the total count
+        max_confidence_result = max(results, key=lambda x: x.confidence) if results else None
+        if max_confidence_result:
+            final_report['total_human_count'] = max_confidence_result.human_count
+            final_report['key_details'].append(
+                f"{max_confidence_result.human_count}: {max_confidence_result.details}"
+            )
+            final_report['safety_statuses'].append(max_confidence_result.safety_status)
 
+        # Add all segments for completeness
         for result in results:
-            if result.human_count > 0 and result.confidence >= self.confidence_threshold:
-                # Create a normalized version of the details for deduplication
-                normalized_details = ' '.join(result.details.lower().split())
-                
-                if normalized_details not in unique_detections:
-                    unique_detections.add(normalized_details)
-                    final_report['key_details'].append(
-                        f"{result.human_count}: {result.details} (Confidence: {result.confidence:.2f})"
-                    )
-                    
-                    # Track detection frequencies with confidence weighting
-                    for i in range(result.human_count):
-                        coord_key = (
-                            result.coordinates[0] // self.stride,
-                            result.coordinates[1] // self.stride
-                        )
-                        detection_counts[coord_key] = detection_counts.get(coord_key, 0) + 1
-                        weighted_confidences.append(result.confidence)
-
             final_report['segments'].append({
                 "coordinates": result.coordinates,
                 "analysis": result.analysis,
-                "confidence": result.confidence
+                "confidence": result.confidence,
+                "safety_status": result.safety_status
             })
 
-        # Calculate final confidence and human count
-        if weighted_confidences:
-            avg_confidence = sum(weighted_confidences) / len(weighted_confidences)
-            if avg_confidence < 0.7:
-                final_report['confidence_level'] = "low"
-            elif avg_confidence < 0.9:
-                final_report['confidence_level'] = "medium"
-
-            # Use weighted counts for total
-            most_common_count = max(detection_counts.values())
-            final_report['total_human_count'] = int(most_common_count * avg_confidence)
-
-        final_report['description'] = self._generate_summary(final_report)
         return final_report
 
     def _generate_summary(self, report: Dict) -> str:

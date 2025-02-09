@@ -46,25 +46,23 @@ class MasterAgent:
         self.current_sector_index = (self.current_sector_index + 1) % len(self.sectors)
         return sector
 
-    def save_image_locally(self, video_data: bytes, chunk_id: int) -> str:
+    def save_annotated_image_locally(self, annotated_image_b64: str, chunk_id: int) -> str:
         """
-        Save the raw video frame (assumed to be an image) to a local file.
+        Save the annotated image (provided as a base64 string) to a local file.
         Returns the file path.
         """
         directory = "images"
         os.makedirs(directory, exist_ok=True)
-        filename = os.path.join(directory, f"chunk_{chunk_id}.jpg")
+        filename = os.path.join(directory, f"chunk_{chunk_id}_annotated.jpg")
         try:
-            # Convert the raw bytes to an image using PIL.
-            from PIL import Image
-            import io
-            image = Image.open(io.BytesIO(video_data))
-            image.save(filename, format="JPEG")
-            logger.info(f"Image for chunk {chunk_id} saved to {filename}")
+            with open(filename, "wb") as f:
+                f.write(base64.b64decode(annotated_image_b64))
+            logger.info(f"Annotated image for chunk {chunk_id} saved to {filename}")
         except Exception as e:
-            logger.error(f"Error saving image for chunk {chunk_id}: {str(e)}")
+            logger.error(f"Error saving annotated image for chunk {chunk_id}: {str(e)}")
             raise e
         return filename
+
 
     async def _get_situation_analysis(self, vision_results: Dict, audio_results: Dict, chunk_id: int) -> str:
         """Use AI to analyze the overall situation for the current chunk."""
@@ -117,8 +115,9 @@ Based on this data:
             # Get current sector information
             current_sector = self._get_next_sector()
 
-            # Save the video frame as an image locally
-            image_path = self.save_image_locally(video_data, chunk_id)
+            # Instead of saving the raw video frame, save the annotated image returned from VisionAgent
+            annotated_image_b64 = vision_results.get("image_data")
+            image_path = self.save_annotated_image_locally(annotated_image_b64, chunk_id)
 
             # Analyze the situation for the current chunk
             situation = self._analyze_situation(
@@ -126,7 +125,7 @@ Based on this data:
                 vision_results=vision_results,
                 audio_results=audio_results,
                 sector=current_sector,
-                image_path=image_path  # Use the local file path
+                image_path=image_path  # Use the local file path of the annotated image
             )
 
             # Get additional AI analysis for a human-readable summary

@@ -64,7 +64,7 @@ async def run_stream_test():
     tester = StreamTester()
     
     # Test directory
-    test_dir = Path("test_data/video")
+    test_dir = Path("test_data/video2")
     
     # Get list of test files
     image_files = sorted([f for f in test_dir.glob("*.jpg")])

@@ -49,9 +49,9 @@ st.markdown("""
         border: 1px solid #f0f0f0;
     }
     
-    .priority-high { border-left: 4px solid #ff4b4b; }
+    .priority-unsafe { border-left: 4px solid #ff4b4b; }
     .priority-medium { border-left: 4px solid #ffa600; }
-    .priority-low { border-left: 4px solid #00cc96; }
+    .priority-safe { border-left: 4px solid #00cc96; }
 
     .img-container {
         position: relative;
@@ -191,7 +191,9 @@ def compute_stats(images):
             "value": sum(1 for img in images if img.get("safety_status") == "UNSAFE"),
             "icon": "⚠️"
         },
-        "Search Area": {"value": "2.5 km²", "icon": "📍"}
+        "Search Area": {"value": "2.5 km²", "icon": "📍"},
+        "Random Stat 1": {"value": "42", "icon": "💡"},
+        "Random Stat 2": {"value": "Upward", "icon": "📈"}
     }
 
 # Load images and metadata
@@ -212,7 +214,7 @@ with st.sidebar:
     
     st.markdown("### 🚨 Rescue Operations Dashboard")
     
-    # Stats Overview
+    # Stats Overview in the sidebar
     st.markdown("### 📊 Stats Overview")
     stats = compute_stats(images)
     
@@ -224,20 +226,37 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
     
-    # Priority Queue based on actual data
+    # Priority Queue based on metadata ranking (Unsafe, Medium, Safe)
     st.markdown("### 🚨 Priority Queue")
+    
+    # Helper: assign a numeric rank based on safety_status
+    def get_priority_rank(img):
+        status = img.get("safety_status", "").upper()
+        if status == "UNSAFE":
+            return 0
+        elif status == "SAFE":
+            return 2
+        else:
+            return 1
+
+    # Sort images: Unsafe first, then Medium, then Safe. Break ties by human_count (descending)
     sorted_images = sorted(
         images,
-        key=lambda x: (x.get("safety_status") == "UNSAFE", x.get("human_count", 0)),
-        reverse=True
+        key=lambda x: (get_priority_rank(x), -x.get("human_count", 0))
     )
 
-    for img in sorted_images[:5]:  # Show top 5 priority items
-        priority = "high" if img.get("safety_status") == "UNSAFE" else \
-                   "medium" if img.get("human_count", 0) > 1 else "low"
+    # Display top 5 priority items with explicit priority labels.
+    for img in sorted_images[:5]:
+        status = img.get("safety_status", "").upper()
+        if status == "UNSAFE":
+            priority_label = "Unsafe"
+        elif status == "SAFE":
+            priority_label = "Safe"
+        else:
+            priority_label = "Medium"
         
         st.markdown(f"""
-        <div class="priority-item priority-{priority}">
+        <div class="priority-item priority-{priority_label.lower()}">
             <div style="display: flex; justify-content: space-between;">
                 <div>
                     Chunk {img.get('chunk_id', 'N/A')}
@@ -245,7 +264,7 @@ with st.sidebar:
                 <div style="color: #666;">{img.get('timestamp', 'N/A')}</div>
             </div>
             <div style="color: #666; margin-top: 0.5rem;">
-                {img.get('human_count', 0)} humans · {priority.capitalize()} priority
+                {img.get('human_count', 0)} humans · {priority_label} priority
             </div>
         </div>
         """, unsafe_allow_html=True)

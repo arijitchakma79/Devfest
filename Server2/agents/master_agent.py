@@ -2,6 +2,8 @@ import os
 import time
 import base64
 import logging
+import json
+import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from agents.vision_agent import VisionAgent
@@ -24,7 +26,7 @@ class SituationalAwareness:
     timestamp: float
     sector: str  # For frontend
     safety_status: str  # For frontend
-    image_path: str  # Local file path for the saved image
+    image_path: str  # Local file path for the saved annotated image
 
 class MasterAgent:
     def __init__(self):
@@ -34,7 +36,7 @@ class MasterAgent:
         self.last_chunk_id = 0
         self.last_chunk_time = time.time()
         self.latest_situation: Optional[SituationalAwareness] = None  # Store latest situation
-        groq_api_key = os.getenv("GROQ_API_KEY")
+        groq_api_key = os.environ.get("GROQ_API_KEY")
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY not found in environment variables")
         self.client = Client(api_key=groq_api_key)
@@ -46,23 +48,39 @@ class MasterAgent:
         self.current_sector_index = (self.current_sector_index + 1) % len(self.sectors)
         return sector
 
-    def save_image_locally(self, video_data: bytes, chunk_id: int) -> str:
+    def save_annotated_image_locally(self, annotated_image_b64: str, unique_id: str, human_count: int, safety_status: str, description: str) -> str:
         """
-        Save the raw video frame (assumed to be an image) to a local file.
-        Returns the file path.
+        Save the annotated image (provided as a base64 string) to a local file.
+        The filename uses a unique identifier to match it with its metadata.
         """
         directory = "images"
         os.makedirs(directory, exist_ok=True)
-        filename = os.path.join(directory, f"chunk_{chunk_id}.jpg")
+        # Clean description (remove spaces) for filename purposes
+        description_clean = description.replace(" ", "-")
+        filename = os.path.join(directory, f"{unique_id}_annotated.jpg")
         try:
-            # Convert the raw bytes to an image using PIL.
-            from PIL import Image
-            import io
-            image = Image.open(io.BytesIO(video_data))
-            image.save(filename, format="JPEG")
-            logger.info(f"Image for chunk {chunk_id} saved to {filename}")
+            with open(filename, "wb") as f:
+                f.write(base64.b64decode(annotated_image_b64))
+            logger.info(f"Annotated image saved to {filename}")
         except Exception as e:
-            logger.error(f"Error saving image for chunk {chunk_id}: {str(e)}")
+            logger.error(f"Error saving annotated image: {str(e)}")
+            raise e
+        return filename
+
+    def save_metadata(self, metadata: Dict, unique_id: str) -> str:
+        """
+        Save metadata as a JSON file.
+        The filename uses the same unique identifier as the image.
+        """
+        directory = "metadata"
+        os.makedirs(directory, exist_ok=True)
+        filename = os.path.join(directory, f"{unique_id}_metadata.json")
+        try:
+            with open(filename, "w") as f:
+                json.dump(metadata, f, indent=4)
+            logger.info(f"Metadata saved to {filename}")
+        except Exception as e:
+            logger.error(f"Error saving metadata: {str(e)}")
             raise e
         return filename
 
@@ -117,8 +135,39 @@ Based on this data:
             # Get current sector information
             current_sector = self._get_next_sector()
 
-            # Save the video frame as an image locally
-            image_path = self.save_image_locally(video_data, chunk_id)
+            # Retrieve annotated image (base64 string) from VisionAgent output
+            annotated_image_b64 = vision_results.get("image_data")
+
+            # Extract metadata from vision_results
+            human_count = vision_results.get("total_human_count", 0)
+            description = vision_results.get("description", "No description available")
+            # Compute danger level and safety status
+            danger_level = self._assess_danger_level(vision_results, audio_results, human_count)
+            safety_status = "SAFE" if danger_level == "low" else "UNSAFE"
+
+            # Generate a unique identifier to be shared by both files
+            unique_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+            # Save the annotated image with the unique identifier
+            image_path = self.save_annotated_image_locally(annotated_image_b64, unique_id, human_count, safety_status, description)
+
+            # Create metadata dictionary for full details
+            metadata = {
+                "chunk_id": chunk_id,
+                "human_count": human_count,
+                "safety_status": safety_status,
+                "description": description,
+                "timestamp": time.strftime('%Y%m%d_%H%M%S'),
+                "ai_analysis": "",  # Will be filled after LLM call
+                "key_observations": vision_results.get("key_details", [])
+            }
+
+            # Get additional AI analysis for a human-readable summary
+            ai_analysis = await self._get_situation_analysis(vision_results, audio_results, chunk_id)
+            metadata["ai_analysis"] = ai_analysis
+
+            # Save metadata as a JSON file with the same unique identifier
+            metadata_path = self.save_metadata(metadata, unique_id)
 
             # Analyze the situation for the current chunk
             situation = self._analyze_situation(
@@ -126,11 +175,8 @@ Based on this data:
                 vision_results=vision_results,
                 audio_results=audio_results,
                 sector=current_sector,
-                image_path=image_path  # Use the local file path
+                image_path=image_path  # Use the local file path of the annotated image
             )
-
-            # Get additional AI analysis for a human-readable summary
-            ai_analysis = await self._get_situation_analysis(vision_results, audio_results, chunk_id)
 
             # Update tracking and store the latest situation
             self.last_chunk_id = chunk_id
@@ -153,7 +199,8 @@ Based on this data:
                     "ai_situation_analysis": ai_analysis,
                     "sector": situation.sector,
                     "safety_status": situation.safety_status,
-                    "image_path": situation.image_path
+                    "image_path": situation.image_path,
+                    "metadata_path": metadata_path
                 },
                 "vision_stats": vision_results.get("stats", {}),
                 "audio_stats": audio_results.get("stats", {})

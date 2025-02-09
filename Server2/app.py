@@ -1,14 +1,13 @@
 import streamlit as st
 import requests
-import base64
 from PIL import Image
-import io
 import time
+import os
 
 # API Configuration
-API_URL = "http://localhost:8000"
+API_URL = "http://localhost:8000"  # Adjust if your API is hosted elsewhere
 
-# Page config
+# Page configuration
 st.set_page_config(
     page_title="Search & Rescue Dashboard",
     page_icon="🚨",
@@ -16,78 +15,71 @@ st.set_page_config(
 )
 
 def get_latest_data():
+    """
+    Fetch the latest analysis data from the API's /stream_status/ endpoint.
+    """
     try:
         response = requests.get(f"{API_URL}/stream_status/")
-        st.write("Raw API Response:", response.json())  # Debug: Show raw response
-        return response.json()
+        data = response.json()
+        st.write("Raw API Response:", data)  # Debug output
+        return data
     except Exception as e:
         st.error(f"API Error: {str(e)}")
         return None
 
-def display_image(image_data):
+def display_local_image(image_path: str):
+    """
+    Loads and displays an image from the given local file path.
+    """
     try:
-        st.write("Attempting to display image...")  # Debug message
-        st.write("Image data type:", type(image_data))  # Debug: Show data type
+        # Check if file exists
+        if not os.path.exists(image_path):
+            st.error(f"Image file not found: {image_path}")
+            return
         
-        # Try to decode and display image
-        image_bytes = base64.b64decode(image_data)
-        st.write("Decoded image size:", len(image_bytes))  # Debug: Show size
-        
-        image = Image.open(io.BytesIO(image_bytes))
-        st.write("Image size:", image.size)  # Debug: Show image dimensions
-        
-        st.image(image, caption="Latest Detection")
-        st.success("Image displayed successfully!")  # Debug: Success message
+        # Open and display the image
+        image = Image.open(image_path)
+        st.image(image, caption="Latest Detection", use_column_width=True)
     except Exception as e:
-        st.error(f"Image Display Error: {str(e)}")
+        st.error(f"Error loading image from {image_path}: {str(e)}")
 
 def main():
     st.title("🚨 Search & Rescue Operations Dashboard")
-    
-    # Debug section
-    st.subheader("Debug Information")
-    if st.button("Fetch Latest Data"):
-        data = get_latest_data()
-        if data:
-            st.json(data)  # Show full JSON response
-            
-            # Check for image data
-            current_analysis = data.get('current_analysis', {})
-            image_data = current_analysis.get('image_data')
-            
-            if image_data:
-                st.write("Found image data! Attempting to display...")
-                display_image(image_data)
-            else:
-                st.warning("No image data found in response")
-    
-    # Main dashboard content
-    left_col, right_col = st.columns([1, 2])
-    
-    with left_col:
-        st.subheader("📊 Stats Overview")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("🔍 Active Searches", "10")
-            st.metric("👥 People Detected", "0")
-        with col2:
-            st.metric("⚠️ Danger Zones", "0")
-            st.metric("🌍 Search Area", "2.5 km²")
+    st.subheader("Latest Drone Feed and Analysis")
 
-    with right_col:
-        st.subheader("📸 Live Detection Feed")
-        data = get_latest_data()
-        if data:
-            current_analysis = data.get('current_analysis', {})
-            if 'image_data' in current_analysis:
-                display_image(current_analysis['image_data'])
-            
-        # Status information
-        st.subheader("Status")
-        if data:
-            st.write("Last Update:", time.strftime('%Y-%m-%d %H:%M:%S'))
-            st.write("Humans Detected:", current_analysis.get('humans_detected', 0))
-            st.write("Safety Status:", current_analysis.get('safety_status', 'Unknown'))
+    # Get the latest data from the API
+    data = get_latest_data()
+    if data is None or "stream_status" not in data:
+        st.info("No analysis data available yet.")
+        return
 
-if __name__ == "__main__":
+    current_analysis = data.get("stream_status", {}).get("current_analysis", {})
+    
+    # Display the image from the latest chunk
+    if current_analysis.get("image_path"):
+        st.markdown("#### Latest Image")
+        display_local_image(current_analysis["image_path"])
+    else:
+        st.warning("No image available for the latest analysis.")
+
+    # Display human-readable analysis details
+    st.markdown("#### Analysis Details")
+    st.write(f"**Humans Detected:** {current_analysis.get('humans_detected', 'N/A')}")
+    st.write(f"**Danger Level:** {current_analysis.get('danger_level', 'N/A')}")
+    st.write(f"**Safety Status:** {current_analysis.get('safety_status', 'N/A')}")
+    st.write(f"**Scene Description:** {current_analysis.get('scene_description', 'N/A')}")
+    st.write(f"**Audio Transcription:** {current_analysis.get('audio_transcription', 'N/A')}")
+    key_obs = current_analysis.get('key_observations', [])
+    if key_obs:
+        st.write("**Key Observations:**")
+        for obs in key_obs:
+            st.write(f"- {obs}")
+    st.write(f"**Sector:** {current_analysis.get('sector', 'N/A')}")
+    st.write(f"**AI Analysis:** {current_analysis.get('ai_situation_analysis', 'N/A')}")
+    
+    st.markdown("---")
+    st.subheader("System Status")
+    st.write("Last update:", time.strftime('%Y-%m-%d %H:%M:%S'))
+
+if __name__ == '__main__':
     main()

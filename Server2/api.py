@@ -1,11 +1,10 @@
+import base64
+import time
+import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Dict, List
-import time
+from typing import Dict
 from distributor.chunk_distributor import ChunkDistributor
-import base64
-import json
-import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,7 +21,7 @@ distributor = ChunkDistributor()
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
+    """Root endpoint for the Search & Rescue Analysis API."""
     return {
         "message": "Search and Rescue Analysis API",
         "version": "1.0",
@@ -31,7 +30,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint."""
     return {
         "status": "healthy",
         "timestamp": time.time(),
@@ -40,16 +39,22 @@ async def health_check():
 
 @app.post("/receive_chunk/")
 async def receive_chunk(chunk: ChunkData):
-    """Process incoming data chunk"""
+    """
+    Endpoint to process an incoming chunk.
+    The API expects the video and audio data as base64-encoded strings.
+    """
     try:
         logger.info(f"Received chunk {chunk.chunk_id}")
         
-        # Process through distributor
-        results = await distributor.process_chunk(chunk)
+        # Convert the base64 strings to bytes
+        video_bytes = base64.b64decode(chunk.video_data)
+        audio_bytes = base64.b64decode(chunk.audio_data)
         
-        # Log summary of results
+        # Process the chunk using the distributor (which delegates to MasterAgent)
+        results = await distributor.process_chunk(chunk.chunk_id, video_bytes, audio_bytes)
+        
         logger.info(f"Processed chunk {chunk.chunk_id}: " 
-                   f"{results.get('current_analysis', {}).get('humans_detected', 0)} humans detected")
+                    f"{results.get('current_analysis', {}).get('humans_detected', 0)} humans detected")
         
         return {
             "status": "success",
@@ -57,25 +62,32 @@ async def receive_chunk(chunk: ChunkData):
             "timestamp": time.time(),
             "results": results,
             "current_analysis": {
-                "image_data": chunk.video_data,  # Original image
+                "image_path": results.get("current_analysis", {}).get("image_path", ""),
                 "humans_detected": results.get("current_analysis", {}).get("humans_detected", 0),
                 "safety_status": results.get("current_analysis", {}).get("safety_status", "UNKNOWN"),
                 "danger_level": results.get("current_analysis", {}).get("danger_level", "low"),
                 "sector": results.get("current_analysis", {}).get("sector", "A1"),
                 "confidence": results.get("current_analysis", {}).get("confidence", 0.0),
                 "key_observations": results.get("current_analysis", {}).get("key_observations", []),
-                "ai_analysis": results.get("current_analysis", {}).get("ai_situation_analysis", "")
+                "ai_analysis": results.get("current_analysis", {}).get("ai_situation_analysis", ""),
+                "scene_description": results.get("current_analysis", {}).get("scene_description", ""),
+                "audio_transcription": results.get("current_analysis", {}).get("audio_transcription", "")
             }
         }
+        
     except Exception as e:
         logger.error(f"Error processing chunk: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error processing chunk: {str(e)}")
 
 @app.get("/stream_status/")
 async def get_stream_status():
-    """Get current stream status and analysis"""
+    """
+    Endpoint to retrieve the latest analysis.
+    This returns the latest processed chunk's situational awareness, including the local image file path.
+    """
     try:
-        status = distributor.master_agent.get_stream_status()
+        # Retrieve the latest analysis from the MasterAgent
+        status = distributor.master_agent.get_latest_analysis()
         logger.info("Stream status requested")
         
         return {
@@ -83,69 +95,27 @@ async def get_stream_status():
             "timestamp": time.time(),
             "stream_status": status,
             "current_analysis": {
-                "humans_detected": status.get("trends", {})
-                    .get("current_situation", {})
-                    .get("humans_present", 0),
-                "danger_level": status.get("trends", {})
-                    .get("current_situation", {})
-                    .get("danger_level", "low"),
-                "observations": status.get("trends", {})
-                    .get("current_situation", {})
-                    .get("latest_observations", [])
+                "image_path": status.get("current_analysis", {}).get("image_path", ""),
+                "humans_detected": status.get("current_analysis", {}).get("humans_detected", 0),
+                "safety_status": status.get("current_analysis", {}).get("safety_status", "UNKNOWN"),
+                "danger_level": status.get("current_analysis", {}).get("danger_level", "low"),
+                "sector": status.get("current_analysis", {}).get("sector", "A1"),
+                "confidence": status.get("current_analysis", {}).get("confidence", 0.0),
+                "key_observations": status.get("current_analysis", {}).get("key_observations", []),
+                "ai_analysis": status.get("current_analysis", {}).get("ai_situation_analysis", ""),
+                "scene_description": status.get("current_analysis", {}).get("scene_description", ""),
+                "audio_transcription": status.get("current_analysis", {}).get("audio_transcription", "")
             }
         }
     except Exception as e:
         logger.error(f"Error getting stream status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting stream status: {str(e)}")
 
-@app.get("/current_trends/")
-async def get_current_trends():
-    """Get current situation trends"""
-    try:
-        trends = distributor.master_agent.stream_analysis.get_current_trends()
-        logger.info("Trends requested")
-        
-        return {
-            "status": "success",
-            "timestamp": time.time(),
-            "trends": trends
-        }
-    except Exception as e:
-        logger.error(f"Error getting trends: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting trends: {str(e)}")
-
-@app.get("/latest_images/{count}")
-async def get_latest_images(count: int = 3):
-    """Get latest processed images"""
-    try:
-        if count < 1:
-            raise HTTPException(status_code=400, detail="Count must be positive")
-            
-        # Get last N images from master agent's history
-        latest = []
-        situations = distributor.master_agent.stream_analysis.recent_situations
-        
-        for situation in list(situations)[-count:]:
-            latest.append({
-                "timestamp": situation.timestamp,
-                "image_data": situation.image_data,
-                "humans_detected": situation.humans_detected,
-                "safety_status": situation.safety_status,
-                "sector": situation.sector
-            })
-        
-        return {
-            "status": "success",
-            "count": len(latest),
-            "images": latest
-        }
-    except Exception as e:
-        logger.error(f"Error getting latest images: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting images: {str(e)}")
-
 @app.get("/system_stats")
 async def get_system_stats():
-    """Get system statistics"""
+    """
+    Endpoint to return processing statistics from the vision and audio agents.
+    """
     try:
         return {
             "status": "success",
@@ -153,24 +123,12 @@ async def get_system_stats():
             "stats": {
                 "vision": distributor.master_agent.vision_agent.get_stats(),
                 "audio": distributor.master_agent.audio_agent.get_stats(),
-                "stream": distributor.master_agent.get_stream_status()
             }
         }
     except Exception as e:
         logger.error(f"Error getting system stats: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
 
-@app.get("/debug_info")
-async def get_debug_info():
-    """Get debug information (for development)"""
-    if app.debug:
-        return {
-            "distributor_status": {
-                "current_chunk_id": distributor.current_chunk_id,
-                "master_agent": {
-                    "last_chunk_id": distributor.master_agent.last_chunk_id,
-                    "last_chunk_time": distributor.master_agent.last_chunk_time
-                }
-            }
-        }
-    return {"message": "Debug endpoint disabled in production"}
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -16,7 +16,7 @@ class StreamTester:
         self.chunk_id = 0
         
     def prepare_chunk(self, video_path: str, audio_path: str) -> Dict:
-        """Prepare a chunk from video and audio files"""
+        """Prepare a chunk from video and audio files."""
         try:
             # Read files
             with open(video_path, 'rb') as f:
@@ -37,7 +37,7 @@ class StreamTester:
             raise
 
     async def send_chunk(self, session: aiohttp.ClientSession, chunk: Dict) -> Dict:
-        """Send a chunk to the server"""
+        """Send a chunk to the server."""
         try:
             async with session.post(
                 f"{self.server_url}/receive_chunk/",
@@ -49,7 +49,7 @@ class StreamTester:
             raise
 
     async def get_stream_status(self, session: aiohttp.ClientSession) -> Dict:
-        """Get current stream status"""
+        """Get the current stream status (latest analysis)."""
         try:
             async with session.get(f"{self.server_url}/stream_status/") as response:
                 return await response.json()
@@ -57,17 +57,8 @@ class StreamTester:
             logger.error(f"Error getting stream status: {e}")
             raise
 
-    async def get_current_trends(self, session: aiohttp.ClientSession) -> Dict:
-        """Get current trends"""
-        try:
-            async with session.get(f"{self.server_url}/current_trends/") as response:
-                return await response.json()
-        except Exception as e:
-            logger.error(f"Error getting trends: {e}")
-            raise
-
 async def run_stream_test():
-    """Run a complete streaming test"""
+    """Run a complete streaming test."""
     tester = StreamTester()
     
     # Test directories
@@ -80,8 +71,8 @@ async def run_stream_test():
     os.makedirs(audio_dir, exist_ok=True)
     
     # Get list of test files
-    video_files = sorted([f for f in os.listdir(video_dir) if f.endswith(('.jpg', '.png'))])
-    audio_files = sorted([f for f in os.listdir(audio_dir) if f.endswith('.wav')])
+    video_files = sorted([f for f in os.listdir(video_dir) if f.lower().endswith(('.jpg', '.png'))])
+    audio_files = sorted([f for f in os.listdir(audio_dir) if f.lower().endswith('.wav')])
     
     if not video_files or not audio_files:
         logger.error(f"Please add test files to:\n{video_dir} (images)\n{audio_dir} (audio)")
@@ -104,15 +95,11 @@ async def run_stream_test():
                 logger.info(f"Chunk {i+1} Results:")
                 logger.info(json.dumps(results, indent=2))
                 
-                # Get status and trends every 3 chunks
+                # Every 3 chunks, get the stream status
                 if (i + 1) % 3 == 0:
                     status = await tester.get_stream_status(session)
-                    trends = await tester.get_current_trends(session)
-                    
                     logger.info("\nStream Status:")
                     logger.info(json.dumps(status, indent=2))
-                    logger.info("\nCurrent Trends:")
-                    logger.info(json.dumps(trends, indent=2))
                 
                 # Wait 1 second between chunks
                 await asyncio.sleep(1)
@@ -122,7 +109,7 @@ async def run_stream_test():
                 continue
 
 async def main():
-    """Main test function"""
+    """Main test function."""
     try:
         logger.info("Starting Stream Test")
         await run_stream_test()

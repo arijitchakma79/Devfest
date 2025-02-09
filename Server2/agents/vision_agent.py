@@ -55,7 +55,8 @@ class VisionAgent:
             "As a search-and-rescue specialist, analyze the following image detection data:\n\n"
             "Detected {count} human(s) with bounding boxes:\n{boxes}\n\n"
             "Provide a concise situational analysis, noting any immediate risks or hazards. "
-            "Conclude with a safety assessment: 'SAFE' or 'UNSAFE'."
+            "Conclude with a safety assessment: 'SAFE' or 'UNSAFE'. "
+            "Also describe what you are seeing in the image. What are the persons doing etc and everything near the surroundings"
         )
 
     def _image_to_base64(self, image: Image.Image) -> str:

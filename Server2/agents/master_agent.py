@@ -2,13 +2,14 @@ import os
 import time
 import base64
 import logging
+import json
+import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from agents.vision_agent import VisionAgent
 from agents.audio_agent import AudioAgent
 from groq import Client
 from dotenv import load_dotenv
-import json
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -47,41 +48,39 @@ class MasterAgent:
         self.current_sector_index = (self.current_sector_index + 1) % len(self.sectors)
         return sector
 
-    def save_annotated_image_locally(self, annotated_image_b64: str, chunk_id: int, human_count: int, safety_status: str, description: str) -> str:
+    def save_annotated_image_locally(self, annotated_image_b64: str, unique_id: str, human_count: int, safety_status: str, description: str) -> str:
         """
         Save the annotated image (provided as a base64 string) to a local file.
-        The filename includes metadata: chunk id, human count, safety status, description, and timestamp.
+        The filename uses a unique identifier to match it with its metadata.
         """
         directory = "images"
         os.makedirs(directory, exist_ok=True)
-        timestamp = time.strftime('%Y%m%d_%H%M%S')
-        # Replace spaces with dashes in description to avoid issues in filenames
+        # Clean description (remove spaces) for filename purposes
         description_clean = description.replace(" ", "-")
-        filename = os.path.join(directory, f"chunk{chunk_id}_humans{human_count}_{safety_status}_{description_clean}_{timestamp}.jpg")
+        filename = os.path.join(directory, f"{unique_id}_annotated.jpg")
         try:
             with open(filename, "wb") as f:
                 f.write(base64.b64decode(annotated_image_b64))
-            logger.info(f"Annotated image for chunk {chunk_id} saved to {filename}")
+            logger.info(f"Annotated image saved to {filename}")
         except Exception as e:
-            logger.error(f"Error saving annotated image for chunk {chunk_id}: {str(e)}")
+            logger.error(f"Error saving annotated image: {str(e)}")
             raise e
         return filename
 
-    def save_metadata(self, metadata: Dict, chunk_id: int) -> str:
+    def save_metadata(self, metadata: Dict, unique_id: str) -> str:
         """
         Save metadata as a JSON file.
-        The filename is based on the chunk id and the current timestamp.
+        The filename uses the same unique identifier as the image.
         """
         directory = "metadata"
         os.makedirs(directory, exist_ok=True)
-        timestamp = time.strftime('%Y%m%d_%H%M%S')
-        filename = os.path.join(directory, f"chunk{chunk_id}_metadata_{timestamp}.json")
+        filename = os.path.join(directory, f"{unique_id}_metadata.json")
         try:
             with open(filename, "w") as f:
-                json.dump(metadata, f)
-            logger.info(f"Metadata for chunk {chunk_id} saved to {filename}")
+                json.dump(metadata, f, indent=4)
+            logger.info(f"Metadata saved to {filename}")
         except Exception as e:
-            logger.error(f"Error saving metadata for chunk {chunk_id}: {str(e)}")
+            logger.error(f"Error saving metadata: {str(e)}")
             raise e
         return filename
 
@@ -146,8 +145,11 @@ Based on this data:
             danger_level = self._assess_danger_level(vision_results, audio_results, human_count)
             safety_status = "SAFE" if danger_level == "low" else "UNSAFE"
 
-            # Save the annotated image with metadata in the filename
-            image_path = self.save_annotated_image_locally(annotated_image_b64, chunk_id, human_count, safety_status, description)
+            # Generate a unique identifier to be shared by both files
+            unique_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+            # Save the annotated image with the unique identifier
+            image_path = self.save_annotated_image_locally(annotated_image_b64, unique_id, human_count, safety_status, description)
 
             # Create metadata dictionary for full details
             metadata = {
@@ -164,8 +166,8 @@ Based on this data:
             ai_analysis = await self._get_situation_analysis(vision_results, audio_results, chunk_id)
             metadata["ai_analysis"] = ai_analysis
 
-            # Save metadata as a JSON file
-            metadata_path = self.save_metadata(metadata, chunk_id)
+            # Save metadata as a JSON file with the same unique identifier
+            metadata_path = self.save_metadata(metadata, unique_id)
 
             # Analyze the situation for the current chunk
             situation = self._analyze_situation(

@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import re
 import json
 from PIL import Image
 import base64
@@ -8,8 +7,8 @@ from io import BytesIO
 import time
 
 # Configuration
-IMAGE_DIR = "images"  # Directory where MasterAgent saves annotated images
-METADATA_DIR = "metadata"  # Directory where MasterAgent saves metadata JSONs
+IMAGE_DIR = "images"      # Directory where MasterAgent saves annotated images
+METADATA_DIR = "metadata" # Directory where MasterAgent saves metadata JSONs
 THUMBNAIL_SIZE = (400, 300)
 
 # Page configuration
@@ -89,27 +88,45 @@ st.markdown("""
         background: rgba(255, 75, 75, 0.9);
         color: white;
     }
+    
+    /* Styling for image cards */
+    .card {
+        background: #f8f8f8;
+        padding: 0.5rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+    }
+    .card img {
+        border-radius: 8px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 def load_metadata() -> dict:
-    """Load all metadata JSON files from the METADATA_DIR."""
+    """
+    Load all metadata JSON files from the METADATA_DIR.
+    Keys are extracted from filenames by splitting on '_metadata'.
+    """
     metadata = {}
     if os.path.exists(METADATA_DIR):
-        for f in os.listdir(METADATA_DIR):
-            if f.lower().endswith('.json'):
+        for filename in os.listdir(METADATA_DIR):
+            if filename.lower().endswith('.json'):
                 try:
-                    path = os.path.join(METADATA_DIR, f)
+                    path = os.path.join(METADATA_DIR, filename)
                     with open(path, "r") as mf:
                         data = json.load(mf)
-                        chunk_id = str(data.get("chunk_id", ""))
-                        metadata[chunk_id] = data
+                        # Extract unique_id from filename: <unique_id>_metadata.json
+                        unique_id = filename.split('_metadata')[0]
+                        metadata[unique_id] = data
                 except Exception as e:
-                    st.error(f"Error loading metadata file {f}: {e}")
+                    st.error(f"Error loading metadata file {filename}: {e}")
     return metadata
 
 def load_images_with_metadata() -> list:
-    """Load images and merge with metadata from MasterAgent output."""
+    """
+    Load images from IMAGE_DIR and merge with metadata from METADATA_DIR.
+    The image unique_id is extracted by splitting on '_annotated'.
+    """
     images = []
     meta = load_metadata()
     
@@ -117,10 +134,10 @@ def load_images_with_metadata() -> list:
         os.makedirs(IMAGE_DIR, exist_ok=True)
         return images
 
-    for f in sorted(os.listdir(IMAGE_DIR)):
-        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+    for filename in sorted(os.listdir(IMAGE_DIR)):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
             try:
-                img_path = os.path.join(IMAGE_DIR, f)
+                img_path = os.path.join(IMAGE_DIR, filename)
                 image = Image.open(img_path).convert("RGB")
                 w, h = image.size
 
@@ -129,17 +146,17 @@ def load_images_with_metadata() -> list:
                 buffered = BytesIO()
                 image.save(buffered, format="WEBP", quality=85)
                 img_str = base64.b64encode(buffered.getvalue()).decode()
-                
-                # Extract chunk id from filename
-                match = re.match(r'chunk(\d+)_', f)
-                chunk_id = match.group(1) if match else None
 
-                # Get corresponding metadata
-                if chunk_id and chunk_id in meta:
-                    metadata = meta[chunk_id]
+                # Extract the unique_id from filename.
+                # Assumes filename format: <unique_id>_annotated.jpg
+                unique_id = filename.split('_annotated')[0]
+                
+                # Merge corresponding metadata if available
+                if unique_id in meta:
+                    metadata = meta[unique_id]
                 else:
                     metadata = {
-                        "chunk_id": chunk_id or "N/A",
+                        "chunk_id": unique_id,
                         "human_count": 0,
                         "safety_status": "UNKNOWN",
                         "description": "No description available",
@@ -156,12 +173,14 @@ def load_images_with_metadata() -> list:
                     **metadata
                 })
             except Exception as e:
-                st.error(f"Error loading {f}: {e}")
+                st.error(f"Error loading image {filename}: {e}")
     
     return images
 
 def compute_stats(images):
-    """Compute dashboard statistics from images data."""
+    """
+    Compute dashboard statistics from images data.
+    """
     return {
         "Active Searches": {"value": len(images), "icon": "🔍"},
         "People Detected": {
@@ -172,7 +191,7 @@ def compute_stats(images):
             "value": sum(1 for img in images if img.get("safety_status") == "UNSAFE"),
             "icon": "⚠️"
         },
-        "Search Area": {"value": "2.5 km²", "icon": "📍"}  # This could be computed based on metadata
+        "Search Area": {"value": "2.5 km²", "icon": "📍"}
     }
 
 # Load images and metadata
@@ -185,7 +204,7 @@ with st.spinner("Loading images and metadata..."):
 with st.sidebar:
     with st.expander("ℹ️ About", expanded=True):
         st.write("""
-        This application detects humans in images using YOLO model. Features:
+        This application detects humans in images using a YOLO model. Features:
         - Real-time object detection
         - Priority classification
         - Rescue operation monitoring
@@ -209,22 +228,18 @@ with st.sidebar:
     st.markdown("### 🚨 Priority Queue")
     sorted_images = sorted(
         images,
-        key=lambda x: (
-            x.get("safety_status") == "UNSAFE",
-            x.get("human_count", 0)
-        ),
+        key=lambda x: (x.get("safety_status") == "UNSAFE", x.get("human_count", 0)),
         reverse=True
     )
 
     for img in sorted_images[:5]:  # Show top 5 priority items
         priority = "high" if img.get("safety_status") == "UNSAFE" else \
-                  "medium" if img.get("human_count", 0) > 1 else "low"
+                   "medium" if img.get("human_count", 0) > 1 else "low"
         
         st.markdown(f"""
         <div class="priority-item priority-{priority}">
             <div style="display: flex; justify-content: space-between;">
                 <div>
-                    <span class="status-indicator status-{priority}"></span>
                     Chunk {img.get('chunk_id', 'N/A')}
                 </div>
                 <div style="color: #666;">{img.get('timestamp', 'N/A')}</div>
@@ -235,33 +250,30 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
 
-# Main content area
-st.markdown("## Detected Images")
-
-# Display images in a grid layout
-cols = st.columns(3)
-for idx, img in enumerate(images):
-    with cols[idx % 3]:
-        st.markdown(f"""
-        <div class="img-container">
-            <img src="{img['src']}" style="width: 100%; border-radius: 8px;">
-            <div class="img-overlay">
-                {img.get('human_count', 0)} Human{'s' if img.get('human_count', 0) != 1 else ''} Detected
-            </div>
-            <div class="safety-badge {'safe' if img.get('safety_status') == 'SAFE' else 'unsafe'}">
-                {img.get('safety_status', 'UNKNOWN')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        with st.expander("Details"):
-            st.write(f"**Description:** {img.get('description', 'No description available')}")
-            if img.get('key_observations'):
-                st.write("**Key Observations:**")
-                for obs in img.get('key_observations', []):
-                    st.write(f"- {obs}")
-            if img.get('ai_analysis'):
-                st.write("**AI Analysis:**")
-                st.write(img['ai_analysis'])
+# Main content area: Grid view of images (header removed)
+if images:
+    cols = st.columns(3)  # Create 3 columns for the grid view
+    for idx, img in enumerate(images):
+        with cols[idx % 3]:
+            st.markdown(f"""<div class="card">""", unsafe_allow_html=True)
+            st.image(
+                img["src"],
+                caption=f"Chunk {img.get('chunk_id', 'N/A')}",
+                use_container_width=True
+            )
+            st.markdown(f"**People Detected:** {img.get('human_count', 0)}")
+            st.markdown(f"**Safety Status:** {img.get('safety_status', 'UNKNOWN')}")
+            st.markdown(f"**Timestamp:** {img.get('timestamp', 'N/A')}")
+            st.markdown(f"**Description:** {img.get('description', 'No description available')}")
+            with st.expander("Details"):
+                st.markdown("**AI Analysis:**")
+                st.write(img.get("ai_analysis", ""))
+                if img.get("key_observations"):
+                    st.markdown("**Key Observations:**")
+                    for obs in img.get("key_observations", []):
+                        st.write(f"- {obs}")
+            st.markdown("</div>", unsafe_allow_html=True)
+else:
+    st.write("No images available to display.")
 
 st.caption(f"Loaded {len(images)} images in {load_duration:.2f}s")

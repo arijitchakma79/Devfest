@@ -1,3 +1,4 @@
+# audio_agent.py
 import os
 import tempfile
 from dotenv import load_dotenv
@@ -10,7 +11,6 @@ from functools import lru_cache
 import time
 from io import BytesIO
 
-# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,6 @@ class AudioAgent:
         """
 
     async def process_chunk(self, audio_bytes: bytes) -> Dict:
-        """Process incoming audio chunk."""
         start_time = time.time()
         try:
             print("\n=== Audio Agent Processing Start ===")
@@ -115,7 +114,6 @@ class AudioAgent:
             }
 
     async def process_audio(self, audio_file_path: str) -> AudioAnalysisResult:
-        """Process audio file and analyze for danger signals."""
         try:
             # Transcribe audio
             with open(audio_file_path, "rb") as audio_file:
@@ -146,7 +144,6 @@ class AudioAgent:
             raise
 
     async def _analyze_risk(self, transcription_text: str) -> tuple[bool, str, float]:
-        """Analyze transcribed text for danger signals."""
         try:
             full_prompt = self.danger_prompt + transcription_text
             
@@ -172,7 +169,6 @@ class AudioAgent:
             return False, f"Error in risk analysis: {str(e)}", 0.0
 
     def get_stats(self) -> Dict:
-        """Return current processing statistics."""
         return {
             "total_audio_processed": self.stats.total_audio_processed,
             "total_dangers_detected": self.stats.total_dangers_detected,

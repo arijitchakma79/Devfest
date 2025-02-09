@@ -27,7 +27,7 @@ data_lock = threading.Lock()
 
 # Destination URL for the receiving FastAPI server.
 # Update <destination-ip> and port as needed.
-DESTINATION_URL = "http://<destination-ip>:8000/receive_chunk/"
+DESTINATION_URL = "http://0.0.0.0:8000/receive_chunk/"
 
 def process_chunk(chunk_id, images):
     """

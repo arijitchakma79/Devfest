@@ -1,51 +1,46 @@
 import base64
-from typing import Tuple
+from typing import Dict
+from agents.master_agent import MasterAgent
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class ChunkDistributor:
     def __init__(self):
         self.current_chunk_id = 0
-        
-    async def process_chunk(self, chunk) -> Tuple[dict, bytes]:
+        self.master_agent = MasterAgent()
+    
+    async def process_chunk(self, chunk) -> Dict:
         """
-        Process incoming chunk and separate into video and audio components
-        Returns tuple of (vision_results, audio_bytes)
+        Process incoming chunk through the master agent
         """
         try:
-            print("\n=== Distributor Processing Start ===")
-            print(f"Received chunk ID: {chunk.chunk_id}")
+            logger.info(f"\n=== Distributor Processing Chunk {chunk.chunk_id} ===")
             
             # Verify chunk sequence
             if chunk.chunk_id != self.current_chunk_id + 1:
-                print(f"Warning: Received chunk {chunk.chunk_id}, expected {self.current_chunk_id + 1}")
+                logger.warning(f"Warning: Received chunk {chunk.chunk_id}, expected {self.current_chunk_id + 1}")
             
             self.current_chunk_id = chunk.chunk_id
             
             # Decode base64 data
-            print("Decoding video data...")
+            logger.info("Decoding data...")
             video_bytes = base64.b64decode(chunk.video_data)
-            print(f"Video size: {len(video_bytes)} bytes")
-            
-            print("Decoding audio data...")
             audio_bytes = base64.b64decode(chunk.audio_data)
-            print(f"Audio size: {len(audio_bytes)} bytes")
             
-            # Process with vision agent
-            print("Sending to vision agent...")
-            vision_results = await self.vision_agent.process_chunk(video_bytes)
-            print("Vision processing complete")
+            # Process with master agent
+            logger.info("Sending to master agent...")
+            results = await self.master_agent.process_chunk(
+                chunk_id=chunk.chunk_id,
+                video_data=video_bytes,
+                audio_data=audio_bytes
+            )
             
-            print("=== Distributor Processing Complete ===\n")
-            return vision_results, audio_bytes
+            logger.info("=== Distributor Processing Complete ===\n")
+            return results
             
         except Exception as e:
-            print(f"ERROR in Distributor: {str(e)}")
+            logger.error(f"ERROR in Distributor: {str(e)}")
             raise e
-            
-    # Placeholder methods for sending to agents
-    def send_to_vision_agent(self, video_bytes: bytes):
-        """Send video data to vision agent"""
-        pass
-        
-    def send_to_audio_agent(self, audio_bytes: bytes):
-        """Send audio data to audio agent"""
-        pass

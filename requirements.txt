@@ -1,0 +1,17 @@
+# Core dependencies
+python-dotenv>=1.0.0
+groq>=0.4.0
+asyncio>=3.4.3
+fastapi>=0.104.1
+uvicorn>=0.24.0
+pydantic>=2.4.2
+
+# Audio processing
+wave>=0.0.2
+whisper>=1.0.0
+
+# Utilities
+python-multipart>=0.0.6
+typing-extensions>=4.8.0
+requests>=2.31.0
+aiofiles>=23.2.1
